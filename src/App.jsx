@@ -27,6 +27,7 @@ export default function CineParecidos() {
   const [apiKey, setApiKey] = useState("");
   const [keyInput, setKeyInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState("descobrir"); // descobrir | prateleira
 
   const [watched, setWatched] = useState([]); // [{id,title,year,poster_path,genre_ids}]
   const [loaded, setLoaded] = useState(false);
@@ -252,98 +253,123 @@ export default function CineParecidos() {
 
       {apiKey && (
         <>
-          {/* SEARCH */}
-          <section style={{ marginBottom: 32 }}>
-            <div style={styles.sectionLabel}><span>BUSCAR E ADICIONAR</span></div>
-            <input
-              type="text"
-              placeholder="Digite o nome de um filme que você já assistiu…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              style={styles.searchInput}
-            />
-            {searching && <p style={styles.hintText}>Buscando…</p>}
-            {searchError && <p style={styles.hintText}>{searchError}</p>}
-            {searchResults.length > 0 && (
-              <div style={styles.searchDropdown}>
-                {searchResults.map((m) => (
-                  <div
-                    key={m.id}
-                    className="search-item"
-                    style={styles.searchItem}
-                    onClick={() => addWatched(m)}
-                  >
-                    {m.poster_path ? (
-                      <img src={`${IMG_BASE_SMALL}${m.poster_path}`} alt="" style={styles.searchPoster} />
-                    ) : (
-                      <div style={styles.searchPosterFallback} />
-                    )}
-                    <div>
-                      <div style={{ fontSize: 14.5 }}>{m.title}</div>
-                      <div style={styles.meta}>{(m.release_date || "").slice(0, 4) || "—"}</div>
+          <div style={styles.tabRow}>
+            <button
+              style={activeTab === "descobrir" ? styles.tabActive : styles.tab}
+              onClick={() => setActiveTab("descobrir")}
+            >
+              Descobrir
+            </button>
+            <button
+              style={activeTab === "prateleira" ? styles.tabActive : styles.tab}
+              onClick={() => setActiveTab("prateleira")}
+            >
+              Prateleira · {watched.length}
+            </button>
+          </div>
+
+          {activeTab === "descobrir" && (
+            <>
+              {/* SEARCH */}
+              <section style={{ marginBottom: 32 }}>
+                <div style={styles.sectionLabel}><span>BUSCAR E ADICIONAR</span></div>
+                <input
+                  type="text"
+                  placeholder="Digite o nome de um filme que você já assistiu…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  style={styles.searchInput}
+                />
+                {searching && <p style={styles.hintText}>Buscando…</p>}
+                {searchError && <p style={styles.hintText}>{searchError}</p>}
+                {searchResults.length > 0 && (
+                  <div style={styles.searchDropdown}>
+                    {searchResults.map((m) => (
+                      <div
+                        key={m.id}
+                        className="search-item"
+                        style={styles.searchItem}
+                        onClick={() => addWatched(m)}
+                      >
+                        {m.poster_path ? (
+                          <img src={`${IMG_BASE_SMALL}${m.poster_path}`} alt="" style={styles.searchPoster} />
+                        ) : (
+                          <div style={styles.searchPosterFallback} />
+                        )}
+                        <div>
+                          <div style={{ fontSize: 14.5 }}>{m.title}</div>
+                          <div style={styles.meta}>{(m.release_date || "").slice(0, 4) || "—"}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* RECOMMENDATIONS */}
+              <section style={styles.recSection}>
+                <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ</span></div>
+                {recLoading && <p style={styles.hintText}>Cruzando recomendações do TMDB…</p>}
+                {recError && <p style={styles.hintText}>{recError}</p>}
+                {!recLoading && watched.length === 0 && (
+                  <p style={styles.hintText}>Marque filmes na prateleira para ver sugestões aqui.</p>
+                )}
+                {!recLoading && watched.length > 0 && recommendations.length === 0 && !recError && (
+                  <p style={styles.hintText}>Nenhuma recomendação encontrada ainda para essa combinação.</p>
+                )}
+                <div style={styles.recGrid}>
+                  {recommendations.map(({ movie, count, sources }) => (
+                    <div key={movie.id} style={styles.recCard} className="film-card">
+                      {movie.poster_path ? (
+                        <img src={`${IMG_BASE}${movie.poster_path}`} alt="" style={styles.recPoster} />
+                      ) : (
+                        <div style={styles.recPosterFallback} />
+                      )}
+                      <div style={styles.recCardBody}>
+                        <h3 style={styles.recTitle}>{movie.title}</h3>
+                        <p style={styles.meta}>{(movie.release_date || "").slice(0, 4) || "—"}</p>
+                        <p style={styles.whyLine}>
+                          Parecido com {[...sources].slice(0, 2).join(" e ")}
+                          {sources.size > 2 ? ` e mais ${sources.size - 2}` : ""}.
+                        </p>
+                        <button style={styles.markBtn} onClick={() => addWatched(movie)}>Marcar visto</button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* WATCHED SHELF */}
-          <section style={{ marginBottom: 36 }}>
-            <div style={styles.sectionLabel}>
-              <span>PRATELEIRA · {watched.length} {watched.length === 1 ? "filme visto" : "filmes vistos"}</span>
-            </div>
-            {watched.length === 0 ? (
-              <div style={styles.emptyShelf}>Busque acima e marque pelo menos um filme para começar.</div>
-            ) : (
-              <div style={styles.shelfRow}>
-                {watched.map((f) => (
-                  <div key={f.id} style={styles.shelfChip}>
-                    {f.poster_path && (
-                      <img src={`${IMG_BASE_SMALL}${f.poster_path}`} alt="" style={styles.shelfPoster} />
-                    )}
-                    <span style={styles.shelfChipTitle}>{f.title}</span>
-                    <button aria-label={`Remover ${f.title}`} onClick={() => removeWatched(f)} style={styles.shelfChipRemove}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* RECOMMENDATIONS */}
-          <section style={styles.recSection}>
-            <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ</span></div>
-            {recLoading && <p style={styles.hintText}>Cruzando recomendações do TMDB…</p>}
-            {recError && <p style={styles.hintText}>{recError}</p>}
-            {!recLoading && watched.length === 0 && (
-              <p style={styles.hintText}>Marque filmes na prateleira para ver sugestões aqui.</p>
-            )}
-            {!recLoading && watched.length > 0 && recommendations.length === 0 && !recError && (
-              <p style={styles.hintText}>Nenhuma recomendação encontrada ainda para essa combinação.</p>
-            )}
-            <div style={styles.recGrid}>
-              {recommendations.map(({ movie, count, sources }) => (
-                <div key={movie.id} style={styles.recCard} className="film-card">
-                  {movie.poster_path ? (
-                    <img src={`${IMG_BASE}${movie.poster_path}`} alt="" style={styles.recPoster} />
-                  ) : (
-                    <div style={styles.recPosterFallback} />
-                  )}
-                  <div style={styles.recCardBody}>
-                    <h3 style={styles.recTitle}>{movie.title}</h3>
-                    <p style={styles.meta}>{(movie.release_date || "").slice(0, 4) || "—"}</p>
-                    <p style={styles.whyLine}>
-                      Parecido com {[...sources].slice(0, 2).join(" e ")}
-                      {sources.size > 2 ? ` e mais ${sources.size - 2}` : ""}.
-                    </p>
-                    <button style={styles.markBtn} onClick={() => addWatched(movie)}>Marcar visto</button>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </section>
+              </section>
 
-          <p style={styles.attribution}>Dados e imagens fornecidos pelo TMDB. Este produto usa a API do TMDB mas não é endossado ou certificado por eles.</p>
+              <p style={styles.attribution}>Dados e imagens fornecidos pelo TMDB. Este produto usa a API do TMDB mas não é endossado ou certificado por eles.</p>
+            </>
+          )}
+
+          {activeTab === "prateleira" && (
+            <section style={{ marginBottom: 36 }}>
+              <div style={styles.sectionLabel}>
+                <span>PRATELEIRA · {watched.length} {watched.length === 1 ? "filme visto" : "filmes vistos"}</span>
+              </div>
+              {watched.length === 0 ? (
+                <div style={styles.emptyShelf}>Vá até a aba "Descobrir" e marque pelo menos um filme para começar.</div>
+              ) : (
+                <div style={styles.shelfGrid}>
+                  {watched.map((f) => (
+                    <div key={f.id} style={styles.shelfCard}>
+                      {f.poster_path ? (
+                        <img src={`${IMG_BASE_SMALL}${f.poster_path}`} alt="" style={styles.shelfCardPoster} />
+                      ) : (
+                        <div style={styles.shelfCardPosterFallback} />
+                      )}
+                      <div style={styles.shelfCardBody}>
+                        <span style={styles.shelfChipTitle}>{f.title}</span>
+                        {f.year && <span style={styles.meta}>{f.year}</span>}
+                      </div>
+                      <button aria-label={`Remover ${f.title}`} onClick={() => removeWatched(f)} style={styles.shelfChipRemove}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </>
       )}
 
@@ -421,6 +447,17 @@ const styles = {
     marginBottom: 24,
   },
   sectionLabel: { fontFamily: "'Space Mono', monospace", fontSize: 11, letterSpacing: "0.08em", color: "#8A8078", marginBottom: 14 },
+  tabRow: { display: "flex", gap: 4, marginBottom: 28, borderBottom: "1px solid #3A322C" },
+  tab: {
+    background: "transparent", border: "none", borderBottom: "2px solid transparent",
+    color: "#8A8078", padding: "10px 4px", marginRight: 20, fontSize: 14.5,
+    fontFamily: "'Fraunces', Georgia, serif",
+  },
+  tabActive: {
+    background: "transparent", border: "none", borderBottom: "2px solid #D4A017",
+    color: "#EDE6D6", padding: "10px 4px", marginRight: 20, fontSize: 14.5,
+    fontFamily: "'Fraunces', Georgia, serif", fontWeight: 600,
+  },
   searchInput: {
     width: "100%",
     background: "#241E19",
@@ -442,6 +479,14 @@ const styles = {
   searchPosterFallback: { width: 32, height: 48, background: "#3A322C", borderRadius: 2, flexShrink: 0 },
   emptyShelf: { border: "1px dashed #4A4038", borderRadius: 4, padding: "18px 20px", color: "#8A8078", fontSize: 14 },
   shelfRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  shelfGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 },
+  shelfCard: {
+    display: "flex", alignItems: "center", gap: 10,
+    background: "#241E19", border: "1px solid #3A322C", borderRadius: 4, padding: 10,
+  },
+  shelfCardPoster: { width: 40, height: 58, objectFit: "cover", borderRadius: 2, flexShrink: 0 },
+  shelfCardPosterFallback: { width: 40, height: 58, background: "#3A322C", borderRadius: 2, flexShrink: 0 },
+  shelfCardBody: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 },
   shelfChip: {
     display: "flex", alignItems: "center", gap: 8,
     background: "#2A241F", border: "1px solid #4A4038", borderRadius: 999,
