@@ -198,6 +198,15 @@ export default function CineParecidos() {
   // (b) the candidate's own TMDB rating — so a title isn't recommended purely
   // because it shares a genre with something you saw. Anything dismissed by
   // the user, or rated below MIN_RATING, never enters the pool. ----
+  const RECS_TARGET = 12;
+  const RECS_CANDIDATE_CAP = 120;
+  const PROVIDER_BATCH = 15;
+
+  function matchesProvider(entry, needle) {
+    if (needle === "all") return true;
+    return entry.providers.some((p) => p.toLowerCase().includes(needle));
+  }
+
   const fetchRecommendations = useCallback(async () => {
     if (!apiKey || watched.length === 0) {
       setRecommendations([]);
@@ -208,24 +217,29 @@ export default function CineParecidos() {
     try {
       const tally = new Map(); // movieId -> { movie, count, sources:Set }
       for (const w of watched) {
-        const res = await fetch(
-          tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: "1" }),
-          { headers: tmdbHeaders(apiKey) }
-        );
-        if (res.status === 401) {
-          throw new Error("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
-        }
-        if (!res.ok) continue;
-        const data = await res.json();
-        for (const m of data.results || []) {
-          if (watchedIds.has(m.id)) continue;
-          if (dismissedIds.has(m.id)) continue;
-          if (!tally.has(m.id)) {
-            tally.set(m.id, { movie: m, count: 0, sources: new Set() });
+        // Pull a couple of pages per watched film so there's enough raw
+        // material left after the rating cut and the streaming filter.
+        for (let page = 1; page <= 2; page++) {
+          const res = await fetch(
+            tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: String(page) }),
+            { headers: tmdbHeaders(apiKey) }
+          );
+          if (res.status === 401) {
+            throw new Error("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
           }
-          const entry = tally.get(m.id);
-          entry.count += 1;
-          entry.sources.add(w.title);
+          if (!res.ok) break;
+          const data = await res.json();
+          for (const m of data.results || []) {
+            if (watchedIds.has(m.id)) continue;
+            if (dismissedIds.has(m.id)) continue;
+            if (!tally.has(m.id)) {
+              tally.set(m.id, { movie: m, count: 0, sources: new Set() });
+            }
+            const entry = tally.get(m.id);
+            entry.count += 1;
+            entry.sources.add(w.title);
+          }
+          if (page >= (data.total_pages || 1)) break;
         }
       }
 
@@ -240,29 +254,38 @@ export default function CineParecidos() {
         }))
         .sort((a, b) => b.combinedScore - a.combinedScore);
 
-      // Keep a pool larger than what we display, so dismissing a title
-      // instantly reveals the next one without another round of fetching.
-      const pool = scored.slice(0, 40);
+      // Fetch streaming availability (Brazil) in batches, going deeper into
+      // the ranked list until every filter (Todos / Netflix / Amazon Prime
+      // Video) has at least RECS_TARGET matches, or we run out of candidates.
+      let annotated = [];
+      let idx = 0;
+      while (idx < scored.length && idx < RECS_CANDIDATE_CAP) {
+        const batch = scored.slice(idx, idx + PROVIDER_BATCH);
+        const withProviders = await Promise.all(
+          batch.map(async (entry) => {
+            try {
+              const pRes = await fetch(
+                tmdbUrl(`/movie/${entry.movie.id}/watch/providers`, apiKey),
+                { headers: tmdbHeaders(apiKey) }
+              );
+              const pData = await pRes.json();
+              const flatrate = pData?.results?.BR?.flatrate || [];
+              return { ...entry, providers: flatrate.map((p) => p.provider_name) };
+            } catch (e) {
+              return { ...entry, providers: [] };
+            }
+          })
+        );
+        annotated = annotated.concat(withProviders);
+        idx += PROVIDER_BATCH;
 
-      // Fetch streaming availability (Brazil) just to power the filter —
-      // it's not shown on the cards, only used to include/exclude titles.
-      const withProviders = await Promise.all(
-        pool.map(async (entry) => {
-          try {
-            const pRes = await fetch(
-              tmdbUrl(`/movie/${entry.movie.id}/watch/providers`, apiKey),
-              { headers: tmdbHeaders(apiKey) }
-            );
-            const pData = await pRes.json();
-            const flatrate = pData?.results?.BR?.flatrate || [];
-            return { ...entry, providers: flatrate.map((p) => p.provider_name) };
-          } catch (e) {
-            return { ...entry, providers: [] };
-          }
-        })
-      );
+        const enoughAll = annotated.length >= RECS_TARGET;
+        const enoughNetflix = annotated.filter((e) => matchesProvider(e, "netflix")).length >= RECS_TARGET;
+        const enoughPrime = annotated.filter((e) => matchesProvider(e, "prime video")).length >= RECS_TARGET;
+        if (enoughAll && enoughNetflix && enoughPrime) break;
+      }
 
-      setRecommendations(withProviders);
+      setRecommendations(annotated);
     } catch (e) {
       setRecError(e.message || "Não foi possível carregar recomendações agora.");
     } finally {
@@ -459,7 +482,7 @@ export default function CineParecidos() {
                     ))}
                   </div>
                 </div>
-                {recLoading && <p style={styles.hintText}>Cruzando recomendações do TMDB…</p>}
+                {recLoading && <p style={styles.hintText}>Cruzando recomendações e disponibilidade de streaming… pode levar alguns segundos.</p>}
                 {recError && <p style={styles.hintText}>{recError}</p>}
                 {!recLoading && watched.length === 0 && (
                   <p style={styles.hintText}>Marque filmes na prateleira para ver sugestões aqui.</p>
@@ -468,7 +491,12 @@ export default function CineParecidos() {
                   <p style={styles.hintText}>Nenhuma recomendação com nota {MIN_RATING}+ encontrada ainda para essa combinação.</p>
                 )}
                 {!recLoading && recommendations.length > 0 && visibleRecommendations.length === 0 && (
-                  <p style={styles.hintText}>Nenhuma recomendação disponível nesse serviço agora. Tente "Todos".</p>
+                  <p style={styles.hintText}>Nenhuma recomendação bem avaliada disponível nessa plataforma no momento.</p>
+                )}
+                {!recLoading && providerFilter !== "all" && visibleRecommendations.length > 0 && visibleRecommendations.length < RECS_TARGET && (
+                  <p style={styles.hintText}>
+                    Só encontramos {visibleRecommendations.length} recomendações bem avaliadas disponíveis nessa plataforma no momento.
+                  </p>
                 )}
                 <div style={styles.recGrid}>
                   {visibleRecommendations.map(({ movie, sources }) => {
