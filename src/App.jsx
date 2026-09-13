@@ -6,7 +6,10 @@ const WATCHED_STORAGE = "tmdb-watched-films";
 const DISMISSED_STORAGE = "tmdb-dismissed-ids";
 const IMG_BASE = "https://image.tmdb.org/t/p/w342";
 const IMG_BASE_SMALL = "https://image.tmdb.org/t/p/w92";
-const MIN_RATING = 7;
+const MIN_RATING_FLOOR = 6;
+const MIN_RATING_CEIL = 9;
+const DEFAULT_MIN_RATING = 7;
+const MIN_RATING_STORAGE = "min-rating";
 
 // TMDB has two credential formats: a short v3 "API Key" (appended as a query
 // param) and a long v4 "Read Access Token" (a JWT, sent as a Bearer header).
@@ -46,6 +49,7 @@ export default function CineParecidos() {
   const [recommendations, setRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
   const [providerFilter, setProviderFilter] = useState("all"); // all | netflix | prime
+  const [minRating, setMinRating] = useState(DEFAULT_MIN_RATING);
   const [recError, setRecError] = useState("");
   const [awardsCache, setAwardsCache] = useState({}); // movieId -> { awards } | null while loading
 
@@ -91,6 +95,12 @@ export default function CineParecidos() {
     } catch (e) {
       // none saved yet
     }
+    try {
+      const mr = localStorage.getItem(MIN_RATING_STORAGE);
+      if (mr) setMinRating(Number(mr));
+    } catch (e) {
+      // none saved yet
+    }
     setLoaded(true);
   }, []);
 
@@ -112,6 +122,15 @@ export default function CineParecidos() {
       console.error("Falha ao salvar exclusões", e);
     }
   }, [dismissedIds, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(MIN_RATING_STORAGE, String(minRating));
+    } catch (e) {
+      console.error("Falha ao salvar nota mínima", e);
+    }
+  }, [minRating, loaded]);
 
   function saveKey() {
     const trimmed = keyInput.trim();
@@ -247,7 +266,7 @@ export default function CineParecidos() {
       // outrank something genuinely well-reviewed) and a minimum rating —
       // below that, it's not worth showing regardless of genre overlap.
       const scored = [...tally.values()]
-        .filter((e) => (e.movie.vote_count || 0) >= 20 && (e.movie.vote_average || 0) >= MIN_RATING)
+        .filter((e) => (e.movie.vote_count || 0) >= 20 && (e.movie.vote_average || 0) >= minRating)
         .map((e) => ({
           ...e,
           combinedScore: e.count * 3 + (e.movie.vote_average || 0),
@@ -291,7 +310,7 @@ export default function CineParecidos() {
     } finally {
       setRecLoading(false);
     }
-  }, [apiKey, watched, watchedIds, dismissedIds]);
+  }, [apiKey, watched, watchedIds, dismissedIds, minRating]);
 
   useEffect(() => {
     fetchRecommendations();
@@ -465,7 +484,18 @@ export default function CineParecidos() {
               {/* RECOMMENDATIONS */}
               <section style={styles.recSection}>
                 <div style={styles.recHeaderRow}>
-                  <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ · NOTA MÍNIMA {MIN_RATING}</span></div>
+                  <div style={styles.ratingControl}>
+                    <span style={styles.sectionLabel}>NOTA MÍNIMA · ★ {minRating.toFixed(1)}</span>
+                    <input
+                      type="range"
+                      min={MIN_RATING_FLOOR}
+                      max={MIN_RATING_CEIL}
+                      step={0.5}
+                      value={minRating}
+                      onChange={(e) => setMinRating(Number(e.target.value))}
+                      style={styles.ratingSlider}
+                    />
+                  </div>
                   <div style={styles.providerFilterRow}>
                     {[
                       { key: "all", label: "Todos" },
@@ -488,7 +518,7 @@ export default function CineParecidos() {
                   <p style={styles.hintText}>Marque filmes na prateleira para ver sugestões aqui.</p>
                 )}
                 {!recLoading && watched.length > 0 && recommendations.length === 0 && !recError && (
-                  <p style={styles.hintText}>Nenhuma recomendação com nota {MIN_RATING}+ encontrada ainda para essa combinação.</p>
+                  <p style={styles.hintText}>Nenhuma recomendação com nota {minRating.toFixed(1)}+ encontrada ainda para essa combinação.</p>
                 )}
                 {!recLoading && recommendations.length > 0 && visibleRecommendations.length === 0 && (
                   <p style={styles.hintText}>Nenhuma recomendação bem avaliada disponível nessa plataforma no momento.</p>
@@ -690,7 +720,9 @@ const styles = {
   shelfChipTitle: { fontSize: 13.5 },
   shelfChipRemove: { background: "none", border: "none", color: "#B3A99B", fontSize: 18, width: 22, height: 22, borderRadius: "50%", lineHeight: 1 },
   recSection: { marginBottom: 24, background: "#241E19", border: "1px solid #3A322C", borderRadius: 6, padding: "22px 20px" },
-  recHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 4 },
+  recHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14, marginBottom: 18 },
+  ratingControl: { display: "flex", alignItems: "center", gap: 10 },
+  ratingSlider: { width: 120, accentColor: "#D4A017" },
   providerFilterRow: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
   providerPill: {
     background: "transparent", border: "1px solid #4A4038", color: "#B3A99B",
