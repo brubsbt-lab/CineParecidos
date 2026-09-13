@@ -45,6 +45,7 @@ export default function CineParecidos() {
 
   const [recommendations, setRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
+  const [providerFilter, setProviderFilter] = useState("all"); // all | netflix | prime
   const [recError, setRecError] = useState("");
   const [awardsCache, setAwardsCache] = useState({}); // movieId -> { awards } | null while loading
 
@@ -241,7 +242,27 @@ export default function CineParecidos() {
 
       // Keep a pool larger than what we display, so dismissing a title
       // instantly reveals the next one without another round of fetching.
-      setRecommendations(scored.slice(0, 40));
+      const pool = scored.slice(0, 40);
+
+      // Fetch streaming availability (Brazil) just to power the filter —
+      // it's not shown on the cards, only used to include/exclude titles.
+      const withProviders = await Promise.all(
+        pool.map(async (entry) => {
+          try {
+            const pRes = await fetch(
+              tmdbUrl(`/movie/${entry.movie.id}/watch/providers`, apiKey),
+              { headers: tmdbHeaders(apiKey) }
+            );
+            const pData = await pRes.json();
+            const flatrate = pData?.results?.BR?.flatrate || [];
+            return { ...entry, providers: flatrate.map((p) => p.provider_name) };
+          } catch (e) {
+            return { ...entry, providers: [] };
+          }
+        })
+      );
+
+      setRecommendations(withProviders);
     } catch (e) {
       setRecError(e.message || "Não foi possível carregar recomendações agora.");
     } finally {
@@ -254,8 +275,13 @@ export default function CineParecidos() {
   }, [fetchRecommendations]);
 
   const visibleRecommendations = useMemo(() => {
-    return recommendations.filter((r) => !dismissedIds.has(r.movie.id)).slice(0, 12);
-  }, [recommendations, dismissedIds]);
+    let list = recommendations.filter((r) => !dismissedIds.has(r.movie.id));
+    if (providerFilter !== "all") {
+      const needle = providerFilter === "netflix" ? "netflix" : "prime video";
+      list = list.filter((r) => r.providers.some((p) => p.toLowerCase().includes(needle)));
+    }
+    return list.slice(0, 12);
+  }, [recommendations, dismissedIds, providerFilter]);
 
   // ---- fetch awards text from OMDb for whatever is currently visible ----
   useEffect(() => {
@@ -415,7 +441,24 @@ export default function CineParecidos() {
 
               {/* RECOMMENDATIONS */}
               <section style={styles.recSection}>
-                <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ · NOTA MÍNIMA {MIN_RATING}</span></div>
+                <div style={styles.recHeaderRow}>
+                  <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ · NOTA MÍNIMA {MIN_RATING}</span></div>
+                  <div style={styles.providerFilterRow}>
+                    {[
+                      { key: "all", label: "Todos" },
+                      { key: "netflix", label: "Netflix" },
+                      { key: "prime", label: "Amazon Prime Video" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        onClick={() => setProviderFilter(opt.key)}
+                        style={providerFilter === opt.key ? styles.providerPillActive : styles.providerPill}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {recLoading && <p style={styles.hintText}>Cruzando recomendações do TMDB…</p>}
                 {recError && <p style={styles.hintText}>{recError}</p>}
                 {!recLoading && watched.length === 0 && (
@@ -423,6 +466,9 @@ export default function CineParecidos() {
                 )}
                 {!recLoading && watched.length > 0 && recommendations.length === 0 && !recError && (
                   <p style={styles.hintText}>Nenhuma recomendação com nota {MIN_RATING}+ encontrada ainda para essa combinação.</p>
+                )}
+                {!recLoading && recommendations.length > 0 && visibleRecommendations.length === 0 && (
+                  <p style={styles.hintText}>Nenhuma recomendação disponível nesse serviço agora. Tente "Todos".</p>
                 )}
                 <div style={styles.recGrid}>
                   {visibleRecommendations.map(({ movie, sources }) => {
@@ -457,7 +503,8 @@ export default function CineParecidos() {
               </section>
 
               <p style={styles.attribution}>
-                Dados via TMDB{omdbKey ? " e OMDb (prêmios)" : ""}. Este produto usa a API do TMDB mas não é endossado ou certificado por eles.
+                Dados via TMDB{omdbKey ? " e OMDb (prêmios)" : ""}. Disponibilidade de streaming (Brasil) via JustWatch, através da TMDB.
+                Este produto usa a API do TMDB mas não é endossado ou certificado por eles.
               </p>
             </>
           )}
@@ -615,6 +662,16 @@ const styles = {
   shelfChipTitle: { fontSize: 13.5 },
   shelfChipRemove: { background: "none", border: "none", color: "#B3A99B", fontSize: 18, width: 22, height: 22, borderRadius: "50%", lineHeight: 1 },
   recSection: { marginBottom: 24, background: "#241E19", border: "1px solid #3A322C", borderRadius: 6, padding: "22px 20px" },
+  recHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 4 },
+  providerFilterRow: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  providerPill: {
+    background: "transparent", border: "1px solid #4A4038", color: "#B3A99B",
+    borderRadius: 999, padding: "4px 10px", fontSize: 12, fontFamily: "'Space Mono', monospace",
+  },
+  providerPillActive: {
+    background: "#3E6259", border: "1px solid #3E6259", color: "#EDE6D6",
+    borderRadius: 999, padding: "4px 10px", fontSize: 12, fontFamily: "'Space Mono', monospace",
+  },
   awardsBadge: {
     fontSize: 11.5, color: "#D4A017", fontFamily: "Georgia, serif", fontStyle: "italic", margin: "0 0 8px", lineHeight: 1.4,
   },
