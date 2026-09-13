@@ -40,6 +40,7 @@ export default function CineParecidos() {
   const [recommendations, setRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all"); // all | netflix | prime
 
   const [toast, setToast] = useState("");
   const toastTimer = useRef(null);
@@ -147,7 +148,10 @@ export default function CineParecidos() {
     showToast(`Removido: ${movie.title}`);
   }
 
-  // ---- build recommendations from TMDB's own similar/recommendations endpoints ----
+  // ---- build recommendations from TMDB's own similar/recommendations endpoints,
+  // then rank by a mix of (a) how many watched films point to the candidate and
+  // (b) the candidate's own TMDB rating — so a title isn't recommended purely
+  // because it shares a genre with something you saw. ----
   const fetchRecommendations = useCallback(async () => {
     if (!apiKey || watched.length === 0) {
       setRecommendations([]);
@@ -156,7 +160,7 @@ export default function CineParecidos() {
     setRecLoading(true);
     setRecError("");
     try {
-      const tally = new Map(); // movieId -> { movie, count, sources:Set, scoreSum }
+      const tally = new Map(); // movieId -> { movie, count, sources:Set }
       for (const w of watched) {
         const res = await fetch(
           tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: "1" }),
@@ -170,18 +174,45 @@ export default function CineParecidos() {
         for (const m of data.results || []) {
           if (watchedIds.has(m.id)) continue;
           if (!tally.has(m.id)) {
-            tally.set(m.id, { movie: m, count: 0, sources: new Set(), scoreSum: 0 });
+            tally.set(m.id, { movie: m, count: 0, sources: new Set() });
           }
           const entry = tally.get(m.id);
           entry.count += 1;
           entry.sources.add(w.title);
-          entry.scoreSum += m.vote_average || 0;
         }
       }
-      const ranked = [...tally.values()]
-        .sort((a, b) => b.count - a.count || b.scoreSum - a.scoreSum)
-        .slice(0, 12);
-      setRecommendations(ranked);
+
+      // Require a minimum number of votes so a title with a handful of 10/10
+      // ratings doesn't outrank something genuinely well-reviewed.
+      const scored = [...tally.values()]
+        .filter((e) => (e.movie.vote_count || 0) >= 20)
+        .map((e) => ({
+          ...e,
+          combinedScore: e.count * 3 + (e.movie.vote_average || 0),
+        }))
+        .sort((a, b) => b.combinedScore - a.combinedScore);
+
+      // Pull a wider pool than we'll display, since the streaming filter
+      // (applied client-side afterwards) may remove some of them.
+      const pool = scored.slice(0, 30);
+
+      const withProviders = await Promise.all(
+        pool.map(async (entry) => {
+          try {
+            const pRes = await fetch(
+              tmdbUrl(`/movie/${entry.movie.id}/watch/providers`, apiKey),
+              { headers: tmdbHeaders(apiKey) }
+            );
+            const pData = await pRes.json();
+            const flatrate = pData?.results?.BR?.flatrate || [];
+            return { ...entry, providers: flatrate.map((p) => p.provider_name) };
+          } catch (e) {
+            return { ...entry, providers: [] };
+          }
+        })
+      );
+
+      setRecommendations(withProviders);
     } catch (e) {
       setRecError(e.message || "Não foi possível carregar recomendações agora.");
     } finally {
@@ -192,6 +223,15 @@ export default function CineParecidos() {
   useEffect(() => {
     fetchRecommendations();
   }, [fetchRecommendations]);
+
+  const visibleRecommendations = useMemo(() => {
+    let list = recommendations;
+    if (providerFilter !== "all") {
+      const needle = providerFilter === "netflix" ? "netflix" : "prime video";
+      list = list.filter((r) => r.providers.some((p) => p.toLowerCase().includes(needle)));
+    }
+    return list.slice(0, 12);
+  }, [recommendations, providerFilter]);
 
   return (
     <div style={styles.page}>
@@ -308,17 +348,38 @@ export default function CineParecidos() {
 
               {/* RECOMMENDATIONS */}
               <section style={styles.recSection}>
-                <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ</span></div>
+                <div style={styles.recHeaderRow}>
+                  <div style={styles.sectionLabel}><span>RECOMENDADOS PARA VOCÊ</span></div>
+                  <div style={styles.providerFilterRow}>
+                    <span style={styles.providerFilterLabel}>Onde assistir:</span>
+                    {[
+                      { key: "all", label: "Todos" },
+                      { key: "netflix", label: "Netflix" },
+                      { key: "prime", label: "Amazon Prime Video" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        onClick={() => setProviderFilter(opt.key)}
+                        style={providerFilter === opt.key ? styles.providerPillActive : styles.providerPill}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {recLoading && <p style={styles.hintText}>Cruzando recomendações do TMDB…</p>}
                 {recError && <p style={styles.hintText}>{recError}</p>}
                 {!recLoading && watched.length === 0 && (
                   <p style={styles.hintText}>Marque filmes na prateleira para ver sugestões aqui.</p>
                 )}
+                {!recLoading && watched.length > 0 && recommendations.length > 0 && visibleRecommendations.length === 0 && (
+                  <p style={styles.hintText}>Nenhuma recomendação disponível nesse serviço agora. Tente "Todos".</p>
+                )}
                 {!recLoading && watched.length > 0 && recommendations.length === 0 && !recError && (
                   <p style={styles.hintText}>Nenhuma recomendação encontrada ainda para essa combinação.</p>
                 )}
                 <div style={styles.recGrid}>
-                  {recommendations.map(({ movie, count, sources }) => (
+                  {visibleRecommendations.map(({ movie, sources, providers }) => (
                     <div key={movie.id} style={styles.recCard} className="film-card">
                       {movie.poster_path ? (
                         <img src={`${IMG_BASE}${movie.poster_path}`} alt="" style={styles.recPoster} />
@@ -327,11 +388,17 @@ export default function CineParecidos() {
                       )}
                       <div style={styles.recCardBody}>
                         <h3 style={styles.recTitle}>{movie.title}</h3>
-                        <p style={styles.meta}>{(movie.release_date || "").slice(0, 4) || "—"}</p>
+                        <p style={styles.meta}>
+                          {(movie.release_date || "").slice(0, 4) || "—"}
+                          {movie.vote_average ? ` · ★ ${movie.vote_average.toFixed(1)}` : ""}
+                        </p>
                         <p style={styles.whyLine}>
                           Parecido com {[...sources].slice(0, 2).join(" e ")}
                           {sources.size > 2 ? ` e mais ${sources.size - 2}` : ""}.
                         </p>
+                        {providers.length > 0 && (
+                          <p style={styles.providerBadge}>Disponível: {providers.join(", ")}</p>
+                        )}
                         <button style={styles.markBtn} onClick={() => addWatched(movie)}>Marcar visto</button>
                       </div>
                     </div>
@@ -339,7 +406,10 @@ export default function CineParecidos() {
                 </div>
               </section>
 
-              <p style={styles.attribution}>Dados e imagens fornecidos pelo TMDB. Este produto usa a API do TMDB mas não é endossado ou certificado por eles.</p>
+              <p style={styles.attribution}>
+                Dados via TMDB. Disponibilidade de streaming (Brasil) via JustWatch, através da TMDB.
+                Este produto usa a API do TMDB mas não é endossado ou certificado por eles.
+              </p>
             </>
           )}
 
@@ -496,6 +566,20 @@ const styles = {
   shelfChipTitle: { fontSize: 13.5 },
   shelfChipRemove: { background: "none", border: "none", color: "#B3A99B", fontSize: 18, width: 22, height: 22, borderRadius: "50%", lineHeight: 1 },
   recSection: { marginBottom: 24, background: "#241E19", border: "1px solid #3A322C", borderRadius: 6, padding: "22px 20px" },
+  recHeaderRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 4 },
+  providerFilterRow: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  providerFilterLabel: { fontSize: 12, color: "#8A8078", fontFamily: "'Space Mono', monospace", marginRight: 2 },
+  providerPill: {
+    background: "transparent", border: "1px solid #4A4038", color: "#B3A99B",
+    borderRadius: 999, padding: "4px 10px", fontSize: 12, fontFamily: "'Space Mono', monospace",
+  },
+  providerPillActive: {
+    background: "#3E6259", border: "1px solid #3E6259", color: "#EDE6D6",
+    borderRadius: 999, padding: "4px 10px", fontSize: 12, fontFamily: "'Space Mono', monospace",
+  },
+  providerBadge: {
+    fontSize: 11.5, color: "#8FBFA8", fontFamily: "'Space Mono', monospace", margin: "0 0 8px",
+  },
   recGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 },
   recCard: { display: "flex", gap: 12, background: "#1B1714", border: "1px solid #4A4038", borderRadius: 4, padding: 12 },
   recPoster: { width: 64, height: 96, objectFit: "cover", borderRadius: 3, flexShrink: 0 },
