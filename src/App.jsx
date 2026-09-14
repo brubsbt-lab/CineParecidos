@@ -216,10 +216,17 @@ export default function CineParecidos() {
   // then rank by a mix of (a) how many watched films point to the candidate and
   // (b) the candidate's own TMDB rating — so a title isn't recommended purely
   // because it shares a genre with something you saw. Anything dismissed by
-  // the user, or rated below MIN_RATING, never enters the pool. ----
+  // the user, or rated below minRating, never enters the pool. ----
   const RECS_TARGET = 12;
   const RECS_CANDIDATE_CAP = 120;
-  const PROVIDER_BATCH = 15;
+  const PROVIDER_BATCH = 25;
+
+  // Caches survive across re-runs of fetchRecommendations within the same
+  // session (e.g. moving the rating slider, dismissing a title) so we never
+  // re-fetch the same watched film's recommendations or the same candidate's
+  // streaming availability twice. This is what was making things slow.
+  const recsCacheRef = useRef(new Map()); // watched movie id -> raw TMDB results
+  const providersCacheRef = useRef(new Map()); // candidate movie id -> providers[]
 
   function matchesProvider(entry, needle) {
     if (needle === "all") return true;
@@ -234,31 +241,44 @@ export default function CineParecidos() {
     setRecLoading(true);
     setRecError("");
     try {
-      const tally = new Map(); // movieId -> { movie, count, sources:Set }
-      for (const w of watched) {
-        // Pull a couple of pages per watched film so there's enough raw
-        // material left after the rating cut and the streaming filter.
-        for (let page = 1; page <= 2; page++) {
-          const res = await fetch(
-            tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: String(page) }),
-            { headers: tmdbHeaders(apiKey) }
+      // Fetch every watched film's recommendations at once instead of one
+      // at a time, and skip the network entirely for films already cached.
+      const perFilm = await Promise.all(
+        watched.map(async (w) => {
+          if (recsCacheRef.current.has(w.id)) {
+            return { w, results: recsCacheRef.current.get(w.id) };
+          }
+          const pages = await Promise.all(
+            [1, 2].map((page) =>
+              fetch(
+                tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: String(page) }),
+                { headers: tmdbHeaders(apiKey) }
+              ).then(async (res) => {
+                if (res.status === 401) {
+                  throw new Error("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
+                }
+                if (!res.ok) return { results: [] };
+                return res.json();
+              })
+            )
           );
-          if (res.status === 401) {
-            throw new Error("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
+          const results = [...(pages[0].results || []), ...(pages[1].results || [])];
+          recsCacheRef.current.set(w.id, results);
+          return { w, results };
+        })
+      );
+
+      const tally = new Map(); // movieId -> { movie, count, sources:Set }
+      for (const { w, results } of perFilm) {
+        for (const m of results) {
+          if (watchedIds.has(m.id)) continue;
+          if (dismissedIds.has(m.id)) continue;
+          if (!tally.has(m.id)) {
+            tally.set(m.id, { movie: m, count: 0, sources: new Set() });
           }
-          if (!res.ok) break;
-          const data = await res.json();
-          for (const m of data.results || []) {
-            if (watchedIds.has(m.id)) continue;
-            if (dismissedIds.has(m.id)) continue;
-            if (!tally.has(m.id)) {
-              tally.set(m.id, { movie: m, count: 0, sources: new Set() });
-            }
-            const entry = tally.get(m.id);
-            entry.count += 1;
-            entry.sources.add(w.title);
-          }
-          if (page >= (data.total_pages || 1)) break;
+          const entry = tally.get(m.id);
+          entry.count += 1;
+          entry.sources.add(w.title);
         }
       }
 
@@ -276,12 +296,16 @@ export default function CineParecidos() {
       // Fetch streaming availability (Brazil) in batches, going deeper into
       // the ranked list until every filter (Todos / Netflix / Amazon Prime
       // Video) has at least RECS_TARGET matches, or we run out of candidates.
+      // Anything already checked before (cached) costs no network call.
       let annotated = [];
       let idx = 0;
       while (idx < scored.length && idx < RECS_CANDIDATE_CAP) {
         const batch = scored.slice(idx, idx + PROVIDER_BATCH);
         const withProviders = await Promise.all(
           batch.map(async (entry) => {
+            if (providersCacheRef.current.has(entry.movie.id)) {
+              return { ...entry, providers: providersCacheRef.current.get(entry.movie.id) };
+            }
             try {
               const pRes = await fetch(
                 tmdbUrl(`/movie/${entry.movie.id}/watch/providers`, apiKey),
@@ -289,8 +313,11 @@ export default function CineParecidos() {
               );
               const pData = await pRes.json();
               const flatrate = pData?.results?.BR?.flatrate || [];
-              return { ...entry, providers: flatrate.map((p) => p.provider_name) };
+              const providers = flatrate.map((p) => p.provider_name);
+              providersCacheRef.current.set(entry.movie.id, providers);
+              return { ...entry, providers };
             } catch (e) {
+              providersCacheRef.current.set(entry.movie.id, []);
               return { ...entry, providers: [] };
             }
           })
