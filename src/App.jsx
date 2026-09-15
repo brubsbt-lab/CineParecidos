@@ -181,7 +181,13 @@ export default function CineParecidos() {
         if (!res.ok) throw new Error(data.status_message || "Erro na busca");
         setSearchResults((data.results || []).slice(0, 8));
       } catch (e) {
-        setSearchError(e.message || "Não deu pra buscar agora. Tente de novo em instantes.");
+        if (e.message && e.message.includes("401")) {
+          setSearchError(e.message);
+        } else if (e.message === "Erro na busca" || (e.message && !e.message.includes("fetch"))) {
+          setSearchError(e.message);
+        } else {
+          setSearchError("Não deu pra buscar agora. Verifique sua conexão e tente de novo.");
+        }
         setSearchResults([]);
       } finally {
         setSearching(false);
@@ -243,28 +249,37 @@ export default function CineParecidos() {
     try {
       // Fetch every watched film's recommendations at once instead of one
       // at a time, and skip the network entirely for films already cached.
+      // Each film is wrapped in its own try/catch: a single flaky request
+      // no longer aborts the whole thing (that was surfacing as a raw
+      // "Failed to fetch" browser error instead of a real result).
       const perFilm = await Promise.all(
         watched.map(async (w) => {
           if (recsCacheRef.current.has(w.id)) {
             return { w, results: recsCacheRef.current.get(w.id) };
           }
-          const pages = await Promise.all(
-            [1, 2].map((page) =>
-              fetch(
-                tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: String(page) }),
-                { headers: tmdbHeaders(apiKey) }
-              ).then(async (res) => {
-                if (res.status === 401) {
-                  throw new Error("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
-                }
-                if (!res.ok) return { results: [] };
-                return res.json();
-              })
-            )
-          );
-          const results = [...(pages[0].results || []), ...(pages[1].results || [])];
-          recsCacheRef.current.set(w.id, results);
-          return { w, results };
+          try {
+            const pages = await Promise.all(
+              [1, 2].map((page) =>
+                fetch(
+                  tmdbUrl(`/movie/${w.id}/recommendations`, apiKey, { language: "pt-BR", page: String(page) }),
+                  { headers: tmdbHeaders(apiKey) }
+                ).then(async (res) => {
+                  if (res.status === 401) {
+                    throw new Error("AUTH_401");
+                  }
+                  if (!res.ok) return { results: [] };
+                  return res.json();
+                })
+              )
+            );
+            const results = [...(pages[0].results || []), ...(pages[1].results || [])];
+            recsCacheRef.current.set(w.id, results);
+            return { w, results };
+          } catch (err) {
+            if (err.message === "AUTH_401") throw err; // real auth problem — stop everything
+            console.error(`Falha ao buscar recomendações para ${w.title}`, err);
+            return { w, results: [] }; // skip this one, keep going with the rest
+          }
         })
       );
 
@@ -333,7 +348,12 @@ export default function CineParecidos() {
 
       setRecommendations(annotated);
     } catch (e) {
-      setRecError(e.message || "Não foi possível carregar recomendações agora.");
+      if (e.message === "AUTH_401") {
+        setRecError("A chave foi rejeitada pelo TMDB (401). Confira se copiou o valor completo, sem espaços.");
+      } else {
+        setRecError("Não foi possível carregar recomendações agora. Verifique sua conexão e tente de novo em instantes.");
+        console.error("Erro ao carregar recomendações", e);
+      }
     } finally {
       setRecLoading(false);
     }
